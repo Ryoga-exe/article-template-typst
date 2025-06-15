@@ -1,14 +1,13 @@
 name: Articles Branch CI
 
 on:
-  push:
-    branches: ["articles/**"]
   pull_request:
-    branches: ["articles/**"]
+    branches: ["main"]
 
 jobs:
   make-article:
     runs-on: ubuntu-24.04
+    if: startsWith(github.head_ref, 'articles/')
 
     steps:
       - name: checkout
@@ -63,7 +62,7 @@ jobs:
         id: branch_info
         shell: bash
         run: |
-          BRANCH="${GITHUB_REF#refs/heads/}"
+          BRANCH="${{github.head_ref}}"
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           if [[ "$BRANCH" =~ ^articles/([^/]+)$ ]]; then
             ARTICLE_NAME="${BASH_REMATCH[1]}"
@@ -76,11 +75,37 @@ jobs:
         run: |
           cd "${{ steps.branch_info.outputs.branch }}"
           make compile
+          mv main.pdf "${{ steps.branch_info.outputs.article_name }}.pdf"
 
       - name: upload artifact
+        id: upload_artifact
         if: steps.branch_info.outputs.match
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.branch_info.outputs.article_name }}.pdf
-          path: ${{ steps.branch_info.outputs.branch }}/main.pdf
+          path: ${{ steps.branch_info.outputs.branch }}/${{ steps.branch_info.outputs.article_name }}.pdf
           retention-days: 3
+          compression-level: 0
+
+      - name: Post a comment
+        if: ${{ steps.upload_artifact.outputs.artifact-url }}
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [[ "${{ steps.upload_artifact.outputs.artifact-url }}" =~ github\.com/([^/]+)/([^/]+)/actions/runs/[0-9]+/artifacts/([0-9]+) ]]; then
+            owner="${BASH_REMATCH[1]}"
+            repo="${BASH_REMATCH[2]}"
+            artifact_id="${BASH_REMATCH[3]}"
+            preview_link="（[プレビュー](https://word-coins.github.io/artifact-previewer/?owner=${owner}&repo=${repo}&artifact_id=${artifact_id})）"
+          else
+            preview_link=""
+          fi
+          artifact_link="[${{ steps.branch_info.outputs.article_name }}.pdf](${{ steps.upload_artifact.outputs.artifact-url }})"
+          message="記事がビルドされました: ${artifact_link} ${preview_link}"
+          set +e
+          echo $message | gh pr comment "${{ github.event.pull_request.html_url }}" -F "-" --edit-last
+          if [ $? -ne 0 ]; then
+            # コメントが存在しないなどにより失敗した場合は新しく投稿する
+            echo $message | gh pr comment "${{ github.event.pull_request.html_url }}" -F "-"
+          fi
+          set -e
